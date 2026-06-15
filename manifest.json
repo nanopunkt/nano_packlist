@@ -1,0 +1,25 @@
+{
+  "name": "nano. lists",
+  "short_name": "nano. lists",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#05070a",
+  "theme_color": "#05070a",
+  "icons": [
+    {
+      "src": "nano-lists-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "nano-lists-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "nano-lists-1024.png",
+      "sizes": "1024x1024",
+      "type": "image/png"
+    }
+  ]
+}
