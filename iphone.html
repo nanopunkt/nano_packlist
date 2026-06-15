@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>nano. kameralager iPhone v7</title>
+<title>nano. kameralager iPhone v8</title>
 <style>
 :root{
   --text:#f5f5f7;--muted:rgba(245,245,247,.62);--line:rgba(255,255,255,.14);
@@ -178,7 +178,7 @@ const db = getFirestore(app);
 try { enableIndexedDbPersistence(db).catch(()=>{}); } catch(e) {}
 
 const ref = doc(db, "packlists", "main");
-const LOCAL_KEY = "nano-packlist-v7-fallback";
+const LOCAL_KEY = "nano-packlist-v8-fallback";
 const categories = ["KAMERA","LICHT","TON","BILDTECHNIK","GRIP","VERBRAUCH","SONSTIGES"];
 const catOrder = Object.fromEntries(categories.map((c,i)=>[c,i]));
 const startData = {
@@ -188,7 +188,7 @@ const startData = {
   ],
   selectedSet: null,
   view: "equipment",
-  version: 7
+  version: 8
 };
 
 let data = normalize(loadFallback() || startData);
@@ -197,6 +197,10 @@ let drag = {type:null,index:null,setIndex:null};
 let applyingRemote = false;
 let cloudReady = false;
 let saveTimer = null;
+let localDirty = false;
+let lastLocalWrite = 0;
+let clientId = localStorage.getItem("nano-packlist-client-id") || crypto.randomUUID();
+localStorage.setItem("nano-packlist-client-id", clientId);
 
 const $ = id => document.getElementById(id);
 function status(text, cls="sync"){ $("cloudStatus").textContent=text; $("cloudStatus").className="cloud-status "+cls; }
@@ -217,27 +221,44 @@ function normalize(d){
     s.items.forEach(i=>{ if(!i.text)i.text=""; if(!i.cat)i.cat="SONSTIGES"; if(!i.qty)i.qty=1; if(i.required===undefined)i.required=false; if(i.done===undefined)i.done=false; });
   });
   d.todos.forEach(t=>{ if(!t.text)t.text=""; if(t.done===undefined)t.done=false; });
-  d.version=7;
+  d.version=8;
   return d;
 }
-function scheduleSave(){
+function scheduleSave(needsRender=true){
+  if(needsRender) render();
   writeFallback();
-  render();
   if(applyingRemote || !cloudReady) return;
+  localDirty = true;
+  lastLocalWrite = Date.now();
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(saveCloud, 250);
+  saveTimer = setTimeout(saveCloud, 350);
 }
 async function saveCloud(){
   try{
     status("Cloud speichert…","sync");
-    await setDoc(ref, { data: clone(data), updatedAt: serverTimestamp() }, { merge:true });
+    await setDoc(ref, {
+      data: clone(data),
+      updatedAt: serverTimestamp(),
+      updatedBy: clientId,
+      clientTime: Date.now()
+    }, { merge:true });
+    localDirty = false;
     status("Cloud gespeichert","ok");
   }catch(e){
     console.error(e);
     status("Cloud Fehler: "+(e.code||e.message||"unbekannt"),"err");
   }
 }
+function hasContent(d){
+  return !!(d && ((Array.isArray(d.todos) && d.todos.length) || (Array.isArray(d.sets) && d.sets.some(s => s.items && s.items.length))));
+}
 function applyRemote(remote){
+  // Wenn Firestore leer ist, aber lokal bereits Inhalt vorhanden ist, nicht lokal überschreiben.
+  if(!hasContent(remote) && hasContent(data)) {
+    saveCloud();
+    return;
+  }
+
   applyingRemote = true;
   data = normalize(clone(remote));
   writeFallback();
@@ -259,8 +280,16 @@ async function initCloud(){
     cloudReady = true;
     onSnapshot(ref, snap=>{
       if(!snap.exists() || !snap.data().data) return;
+      const docData = snap.data();
+
+      // Wichtig: Nicht direkt den eigenen lokalen Schreibvorgang mit einem alten Cloud-Stand überschreiben.
       if(applyingRemote) return;
-      applyRemote(snap.data().data);
+      if(localDirty && Date.now() - lastLocalWrite < 2500) {
+        status("Cloud wartet…","sync");
+        return;
+      }
+
+      applyRemote(docData.data);
       status("Cloud live","ok");
     }, err=>{ console.error(err); status("Cloud Fehler: "+(err.code||err.message||"unbekannt"),"err"); });
   }catch(e){
@@ -292,12 +321,12 @@ function makeItem(item,onToggle,onDelete,opts){
   row.ondrop=e=>{ e.preventDefault(); moveItem(opts.type, drag.index, opts.index, opts.setIndex); };
   const check=document.createElement("div"); check.className="check"; check.onclick=onToggle;
   const txt=document.createElement("div"); txt.className="txt"; txt.textContent=item.text; txt.contentEditable=true;
-  txt.oninput=()=>{ item.text=txt.textContent.trim(); scheduleSave(); };
+  txt.oninput=()=>{ item.text=txt.textContent.trim(); scheduleSave(false); };
   txt.ondragstart=e=>e.preventDefault();
   const handle=document.createElement("div"); handle.className="handle"; handle.textContent=deleteMode?"×":"="; handle.onclick=()=>{ if(deleteMode) onDelete(); };
   row.append(check,txt);
   if(opts.type!=="todo"){
-    const qty=document.createElement("input"); qty.type="number"; qty.min="1"; qty.className="qty"; qty.value=item.qty||1; qty.oninput=()=>{ item.qty=Number(qty.value)||1; scheduleSave(); };
+    const qty=document.createElement("input"); qty.type="number"; qty.min="1"; qty.className="qty"; qty.value=item.qty||1; qty.oninput=()=>{ item.qty=Number(qty.value)||1; scheduleSave(false); };
     const star=document.createElement("div"); star.className="star"+(item.required?" required":""); star.textContent="★"; star.onclick=()=>{ item.required=!item.required; scheduleSave(); };
     row.append(qty,makeCat(item),star);
   }
@@ -363,7 +392,7 @@ $("deleteDoneTodos").onclick=()=>{ data.todos=data.todos.filter(t=>!t.done); sch
 $("deleteAllTodos").onclick=()=>{ if(confirm("Alle To-dos löschen?")){data.todos=[];scheduleSave();} };
 $("addSet").onclick=()=>{ data.sets.push({name:"Neues Set",items:[]}); scheduleSave(); };
 $("backToSets").onclick=()=>{ data.selectedSet=null; scheduleSave(); };
-$("setName").oninput=e=>{ const s=data.sets[data.selectedSet]; if(!s)return; s.name=e.target.value; scheduleSave(); };
+$("setName").oninput=e=>{ const s=data.sets[data.selectedSet]; if(!s)return; s.name=e.target.value; scheduleSave(false); renderSets(); };
 $("addEquip").onclick=()=>{ const s=data.sets[data.selectedSet], v=$("equipInput").value.trim(); if(!s||!v)return; s.items.push({text:v,done:false,cat:"SONSTIGES",qty:1,required:false}); $("equipInput").value=""; scheduleSave(); };
 $("equipInput").onkeydown=e=>{ if(e.key==="Enter") $("addEquip").click(); };
 $("resetSet").onclick=()=>{ const s=data.sets[data.selectedSet]; if(!s)return; s.items.forEach(i=>i.done=false); scheduleSave(); };
