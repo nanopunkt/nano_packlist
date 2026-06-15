@@ -168,6 +168,34 @@ input[type=text],input[type=number]{font-size:14px!important;padding:0 12px!impo
   .item{grid-template-columns:28px 1fr 34px!important}
 }
 
+
+/* --- FIREBASE CLOUD STATUS --- */
+.cloud-status{
+  position:fixed;
+  right:14px;
+  bottom:14px;
+  z-index:80;
+  border:1px solid rgba(255,255,255,.16);
+  background:rgba(8,12,18,.72);
+  color:rgba(245,245,247,.78);
+  backdrop-filter:blur(20px);
+  -webkit-backdrop-filter:blur(20px);
+  border-radius:999px;
+  padding:8px 12px;
+  font-size:12px;
+  box-shadow:0 12px 40px rgba(0,0,0,.35);
+}
+.cloud-status.ok{color:#7dff9d}
+.cloud-status.err{color:#ff8a8a}
+.cloud-status.sync{color:#ffd76b}
+@media(max-width:900px){
+  .cloud-status{
+    left:12px;
+    right:auto;
+    bottom:calc(76px + env(safe-area-inset-bottom));
+  }
+}
+
 </style>
 </head>
 <body>
@@ -222,6 +250,7 @@ input[type=text],input[type=number]{font-size:14px!important;padding:0 12px!impo
     </div>
   </section>
 
+  <div id="cloudStatus" class="cloud-status sync">Cloud verbindet…</div>
   <div class="footer">⭐ = Pflichtteil · Zahl = Stückzahl · Kategorie-Farbe = Bereich · Ziehen am „=“ ändert Reihenfolge</div>
 </div>
 
@@ -231,7 +260,7 @@ const OLD_KEYS=["nano-kameralager-icloud-html-v3","nano-kameralager-icloud-html-
 const categories=["KAMERA","LICHT","TON","BILDTECHNIK","GRIP","VERBRAUCH","SONSTIGES"];
 const catOrder=Object.fromEntries(categories.map((c,i)=>[c,i]));
 const startData={todos:[],sets:[{name:"Set 1",items:[]},{name:"Set 2",items:[]},{name:"Set 3",items:[]},{name:"Set 4",items:[]}],selectedSet:null,view:"todo"};
-let data=load(), deleteMode=false, drag={type:null,index:null,setIndex:null};
+window.data=load(); var data = window.data; let deleteMode=false, drag={type:null,index:null,setIndex:null};
 
 function normalize(d){
   if(!d.todos)d.todos=[]; if(!d.sets)d.sets=structuredClone(startData.sets); if(!d.view)d.view="todo";
@@ -305,7 +334,173 @@ loadBackup.onclick=()=>backupFile.click();
 backupFile.onchange=e=>{const file=e.target.files[0];if(!file)return;const r=new FileReader();r.onload=()=>{try{data=normalize(JSON.parse(r.result));save();closeSet();renderTodos();renderSets();setView(data.view||"todo")}catch{alert("Backup konnte nicht geladen werden.")}};r.readAsText(file)};
 document.addEventListener("keydown",e=>{if(e.key==="Backspace"&&(e.metaKey||e.ctrlKey)){deleteMode=!deleteMode;renderTodos();if(data.selectedSet!==null)renderEquip()}});
 
+
+
+window.__setData = function(newData){
+  data = newData;
+  window.data = data;
+};
+
+window.normalize = normalize;
+window.save = save;
+window.setView = setView;
+window.renderTodos = renderTodos;
+window.renderSets = renderSets;
+window.renderEquip = renderEquip;
+window.closeSet = closeSet;
+
 renderTodos();renderSets();setView(data.view||"todo");
 </script>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+import {
+  getFirestore,
+  doc,
+  getDoc,
+  setDoc,
+  onSnapshot,
+  enableIndexedDbPersistence,
+  serverTimestamp
+} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAndwuzOFPqT44cKIyKXltarJFcSeghHfg",
+  authDomain: "nano-lager.firebaseapp.com",
+  projectId: "nano-lager",
+  storageBucket: "nano-lager.firebasestorage.app",
+  messagingSenderId: "355793338705",
+  appId: "1:355793338705:web:6613f9173803c6d3ddd370"
+};
+
+const CLOUD_COLLECTION = "packlists";
+const CLOUD_DOCUMENT = "main";
+const LOCAL_KEY = "nano-kameralager-icloud-html-v4";
+
+const statusEl = document.getElementById("cloudStatus");
+function setCloudStatus(text, cls="sync"){
+  if(!statusEl) return;
+  statusEl.textContent = text;
+  statusEl.className = "cloud-status " + cls;
+}
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const ref = doc(db, CLOUD_COLLECTION, CLOUD_DOCUMENT);
+
+try {
+  enableIndexedDbPersistence(db).catch(() => {});
+} catch(e) {}
+
+let cloudReady = false;
+let applyingRemote = false;
+let saveTimer = null;
+
+function clone(obj){
+  return JSON.parse(JSON.stringify(obj));
+}
+
+function localCurrentData(){
+  try {
+    if (window.data) return clone(window.data);
+  } catch(e) {}
+  try {
+    return JSON.parse(localStorage.getItem(LOCAL_KEY));
+  } catch(e) {
+    return null;
+  }
+}
+
+function applyRemoteData(remote){
+  if(!remote || typeof remote !== "object") return;
+  applyingRemote = true;
+
+  try {
+    if (typeof window.normalize === "function") {
+      window.__setData(window.normalize(remote));
+    } else {
+      window.__setData(remote);
+    }
+
+    localStorage.setItem(LOCAL_KEY, JSON.stringify(window.data));
+
+    if (typeof window.closeSet === "function" && window.data.selectedSet === null) {
+      try { window.closeSet(); } catch(e) {}
+    }
+    if (typeof window.renderTodos === "function") window.renderTodos();
+    if (typeof window.renderSets === "function") window.renderSets();
+    if (window.data.selectedSet !== null && typeof window.renderEquip === "function") window.renderEquip();
+    if (typeof window.setView === "function") window.setView(window.data.view || "todo");
+  } finally {
+    setTimeout(() => { applyingRemote = false; }, 100);
+  }
+}
+
+async function initialCloudLoad(){
+  setCloudStatus("Cloud lädt…", "sync");
+  const snap = await getDoc(ref);
+  const local = localCurrentData();
+
+  if (snap.exists()) {
+    const cloudData = snap.data().data;
+    if (cloudData) applyRemoteData(cloudData);
+    setCloudStatus("Cloud verbunden", "ok");
+  } else {
+    const initial = local || window.data;
+    await setDoc(ref, {
+      data: clone(initial),
+      updatedAt: serverTimestamp()
+    });
+    setCloudStatus("Cloud angelegt", "ok");
+  }
+
+  cloudReady = true;
+}
+
+function pushCloudNow(){
+  if(!cloudReady || applyingRemote) return;
+  const current = localCurrentData();
+  if(!current) return;
+
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    try {
+      setCloudStatus("Cloud speichert…", "sync");
+      await setDoc(ref, {
+        data: current,
+        updatedAt: serverTimestamp()
+      }, { merge: true });
+      setCloudStatus("Cloud gespeichert", "ok");
+    } catch(err) {
+      console.error(err);
+      setCloudStatus("Cloud Fehler", "err");
+    }
+  }, 250);
+}
+
+const originalSetItem = localStorage.setItem.bind(localStorage);
+localStorage.setItem = function(key, value){
+  originalSetItem(key, value);
+  if(key === LOCAL_KEY) pushCloudNow();
+};
+
+initialCloudLoad().then(() => {
+  onSnapshot(ref, (snap) => {
+    if (!snap.exists()) return;
+    const cloudData = snap.data().data;
+    if (!cloudData) return;
+    if (applyingRemote) return;
+    applyRemoteData(cloudData);
+    setCloudStatus("Cloud live", "ok");
+  }, (err) => {
+    console.error(err);
+    setCloudStatus("Cloud Fehler", "err");
+  });
+}).catch((err) => {
+  console.error(err);
+  setCloudStatus("Cloud Fehler", "err");
+});
+</script>
+
 </body>
 </html>
